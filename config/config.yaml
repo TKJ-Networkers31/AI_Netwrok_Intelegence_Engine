@@ -8,10 +8,9 @@ model:
   # `api_key_env` (see .env.example / NVIDIA_API_KEY).
   primary:
     provider: nvidia
-    model: meta/llama-3.1-8b-instruct
+    model: nvidia/nemotron-3-ultra-550b-a55b
     base_url: https://integrate.api.nvidia.com/v1
     api_key_env: NVIDIA_API_KEY
-    timeout_seconds: 30
 
   # Ollama is the fallback: used automatically whenever NVIDIA fails with a
   # recoverable runtime error (auth failure, timeout, connection refused,

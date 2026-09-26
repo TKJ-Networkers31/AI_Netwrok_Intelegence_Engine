@@ -4,7 +4,7 @@ ANIE (AI Network Intelligence Engine) is a standalone network engineering AI
 system.
 
 **Phase 0** implemented the foundational architecture: a CLI that sends a
-prompt through an Agent, a ModelRouter, and a single Ollama model provider.
+prompt through an Agent, a ModelRouter, and a single model provider.
 
 **Phase 1** (this phase) extends the model layer with automatic fallback:
 
@@ -16,18 +16,18 @@ Agent
  │
  ▼
 ModelRouter
- ├── Ollama (primary)
- └── NVIDIA (fallback)
+ ├── NVIDIA (primary)
+ └── Ollama (fallback)
  │
  ▼
-Local Model / NVIDIA-hosted Model
+NVIDIA-hosted Model / Local Model
 ```
 
-When the primary provider (Ollama) fails with a recoverable runtime error
-(connection refused, timeout, model not pulled, malformed response, etc.),
-the Agent automatically retries the same request against the fallback
-provider (NVIDIA) before giving up. If both fail, ANIE returns a single
-structured, readable error describing both failures.
+When the primary provider (NVIDIA) fails with a recoverable runtime error
+(authentication failure, timeout, connection refused, model not found,
+malformed response, etc.), the Agent automatically retries the same request
+against the fallback provider (Ollama) before giving up. If both fail, ANIE
+returns a single structured, readable error describing both failures.
 
 This phase does **not** include MCP, device connections, automation,
 scheduling, voice, persistent memory, or any other later-phase capability.
@@ -37,11 +37,11 @@ scheduling, voice, persistent memory, or any other later-phase capability.
 ## Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.com) installed and running locally (or reachable
-  over the network) for the primary provider
-- A pulled Ollama model (default: `qwen3:1.7b`)
-- *(Optional)* An [NVIDIA API key](https://build.nvidia.com/) if you want to
-  enable the NVIDIA fallback provider
+- An [NVIDIA API key](https://build.nvidia.com/) for the primary provider
+- *(Optional but recommended)* [Ollama](https://ollama.com) installed and
+  running locally (or reachable over the network), with a model pulled
+  (default: `qwen3:1.7b`), so that ANIE can automatically fall back if
+  NVIDIA is unreachable
 
 ---
 
@@ -90,7 +90,21 @@ pip install -e ".[dev]"
 
 ---
 
-## Starting Ollama (primary provider)
+## Setting up NVIDIA (primary provider)
+
+1. Get a key from https://build.nvidia.com/
+2. Export it as an environment variable (or put it in a `.env` file, see
+   `.env.example`):
+
+```bash
+export NVIDIA_API_KEY=nvapi-...
+```
+
+`NvidiaProvider` reads this fresh from the environment on every request —
+it is never stored in `config.yaml`, never logged, and never included in
+error messages/details.
+
+## Starting Ollama (fallback provider, optional but recommended)
 
 ```bash
 # Install Ollama: https://ollama.com/download
@@ -98,15 +112,17 @@ ollama serve            # start the Ollama server (if not already running)
 ollama pull qwen3:1.7b  # pull the default model used by config/config.yaml
 ```
 
-By default Ollama listens on `http://localhost:11434`.
+By default Ollama listens on `http://localhost:11434`. If you don't set
+Ollama up, ANIE still works fine as long as NVIDIA is reachable — it simply
+has no fallback available if NVIDIA fails.
 
 ---
 
 ## Configuration
 
 Configuration lives in `config/config.yaml`. The `model.primary` section is
-required (same as Phase 0); `model.fallback` is new in Phase 1 and
-**optional** — omit it entirely and ANIE behaves exactly like Phase 0.
+required; `model.fallback` is **optional** — omit it entirely and ANIE runs
+with the primary provider only, no automatic retry on failure.
 
 ```yaml
 app:
@@ -114,20 +130,24 @@ app:
   environment: development
 
 model:
+  # NVIDIA is the primary provider. The API key is NEVER put here — it is
+  # read at request time from the environment variable named by
+  # `api_key_env` (see .env.example / NVIDIA_API_KEY).
   primary:
-    provider: ollama
-    model: qwen3:1.7b
-    base_url: http://localhost:11434
-    timeout_seconds: 60
-
-  # Optional. Enables automatic fallback to NVIDIA when the primary
-  # provider fails with a recoverable runtime error.
-  fallback:
     provider: nvidia
     model: meta/llama-3.1-8b-instruct
     base_url: https://integrate.api.nvidia.com/v1   # defaults to this if omitted
     api_key_env: NVIDIA_API_KEY                       # defaults to this if omitted
     timeout_seconds: 30
+
+  # Ollama is the fallback: used automatically whenever NVIDIA fails with a
+  # recoverable runtime error (auth failure, timeout, connection refused,
+  # model not found, malformed response, etc.).
+  fallback:
+    provider: ollama
+    model: qwen3:1.7b
+    base_url: http://localhost:11434
+    timeout_seconds: 60
 
   # Optional shared default. Used for any of the sections above that don't
   # set their own timeout_seconds.
@@ -206,11 +226,11 @@ python -m cli.main "Explain VLAN"
 ### Fallback behavior at a glance
 
 ```text
-Ollama available          → response comes from Ollama, no fallback attempted
-Ollama unavailable/times   → ANIE automatically retries via NVIDIA
-  out/model missing/etc.     (only if model.fallback is configured)
-    NVIDIA succeeds         → response comes from NVIDIA
-    NVIDIA also fails       → structured error naming BOTH failures
+NVIDIA available          → response comes from NVIDIA, no fallback attempted
+NVIDIA unavailable/times   → ANIE automatically retries via Ollama
+  out/auth fails/etc.        (only if model.fallback is configured)
+    Ollama succeeds         → response comes from Ollama
+    Ollama also fails       → structured error naming BOTH failures
                               (ErrorCode: all_providers_failed)
 ```
 
@@ -254,11 +274,17 @@ Tests cover:
   server error (5xx), malformed response, `health_check()` true/false
   paths.
 - **ModelRouter**: selects the configured primary provider; resolves an
-  optional NVIDIA fallback provider; rejects an unsupported provider in
-  either section; reports whether a fallback is configured.
+  optional Ollama fallback provider (or any other supported provider);
+  rejects an unsupported provider in either section; reports whether a
+  fallback is configured.
 - **EventBus**: publish/subscribe with sync and async handlers,
   unsubscribe, `publish_sync`.
 - **CLI**: single-shot success/error output formatting.
+
+Note: the fixtures in `tests/conftest.py` use `ollama` as the primary
+provider purely because it's the simplest fake to construct in unit tests
+(no API key handling) — this has no bearing on which provider is primary
+in the actual `config/config.yaml` shipped with ANIE (NVIDIA).
 
 ---
 
@@ -278,14 +304,14 @@ anie/
 │   │   ├── base.py            # ModelProvider abstract interface (+ capabilities())
 │   │   ├── router.py          # ModelRouter: resolves primary + optional fallback provider
 │   │   └── providers/
-│   │       ├── ollama.py      # OllamaProvider implementation
-│   │       └── nvidia.py      # NvidiaProvider implementation (Phase 1)
+│   │       ├── nvidia.py      # NvidiaProvider implementation (Phase 1) — default primary
+│   │       └── ollama.py      # OllamaProvider implementation — default fallback
 │   └── events/
 │       └── bus.py             # Minimal async-safe EventBus
 ├── cli/
 │   └── main.py                # CLI entrypoint (single-shot + interactive)
 ├── config/
-│   └── config.yaml            # Default configuration (fallback section commented out)
+│   └── config.yaml            # Default configuration: NVIDIA primary, Ollama fallback
 ├── tests/                     # pytest suite (mocked providers, no live Ollama/NVIDIA needed)
 ├── .env.example
 ├── .gitignore
@@ -309,8 +335,11 @@ anie/
   primary provider eagerly at construction time (unchanged from Phase 0),
   and now also resolves an optional fallback provider the same way. Routing
   stays deterministic: `get_provider()` always returns the primary,
-  `get_fallback_provider()` returns the fallback or `None`. There is still
-  no load balancing or capability matching.
+  `get_fallback_provider()` returns the fallback or `None`. Which concrete
+  provider is "primary" vs "fallback" is entirely driven by
+  `config/config.yaml` (default: NVIDIA primary, Ollama fallback) — the
+  router itself has no hardcoded preference. There is still no load
+  balancing or capability matching.
 - **`Context`** (`app/core/types.py`): minimal structured conversation
   state (`system_prompt` + `messages`), unchanged and still
   provider-independent — the same `Context` is reused for both the primary
@@ -333,13 +362,18 @@ anie/
   fallback continues to behave exactly as it did in Phase 0.
 - **`NvidiaProvider`** (`app/models/providers/nvidia.py`): talks to an
   OpenAI-compatible `/chat/completions` endpoint (NVIDIA NIM /
-  `integrate.api.nvidia.com`). Reads its API key fresh from the environment
-  variable named by `api_key_env` on every request (never cached at
-  construction, never logged, never placed in error details). Missing key →
+  `integrate.api.nvidia.com`). This is the **default primary** provider.
+  Reads its API key fresh from the environment variable named by
+  `api_key_env` on every request (never cached at construction, never
+  logged, never placed in error details). Missing key →
   `authentication_failed` without making a network call; 401/403 →
   `authentication_failed`; 404 → `model_unavailable`; 5xx →
   `provider_unavailable`; timeout → `connection_timeout`; malformed/empty
   response → `model_request_failed`.
+- **`OllamaProvider`** (`app/models/providers/ollama.py`): talks to a local
+  (or remote) Ollama server's `/api/chat` endpoint. This is the **default
+  fallback** provider, used automatically when NVIDIA fails with a
+  recoverable error.
 - **`EventBus`** (`app/events/bus.py`): unchanged from Phase 0.
 
 ### Error handling
@@ -349,9 +383,9 @@ raw exceptions crossing the Agent/CLI boundary:
 
 - `invalid_configuration`
 - `invalid_provider`
-- `provider_unavailable` (connection refused, 5xx from Ollama/NVIDIA)
+- `provider_unavailable` (connection refused, 5xx from NVIDIA/Ollama)
 - `connection_timeout`
-- `model_unavailable` (model not pulled / 404)
+- `model_unavailable` (model not found / 404)
 - `model_request_failed` (malformed response, 4xx, etc.)
 - `authentication_failed` *(Phase 1)* — missing/invalid NVIDIA API key
 - `all_providers_failed` *(Phase 1)* — both primary and fallback failed;
@@ -386,7 +420,7 @@ Additionally, **streaming generation was intentionally left out of Phase
 complicate the current implementation, and adding it cleanly would require
 changing the `ModelProvider.generate() -> ExecutionResult` contract (a
 single, complete result) to something that can yield incremental chunks
-across both `OllamaProvider` and `NvidiaProvider`, plus a corresponding
+across both `NvidiaProvider` and `OllamaProvider`, plus a corresponding
 change to how the CLI prints a response and how the Agent/EventBus report
 partial progress. That is a real interface change, not a provider-local
 addition, so it's flagged here as remaining work rather than bolted on.
