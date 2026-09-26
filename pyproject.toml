@@ -1,0 +1,28 @@
+[project]
+name = "anie"
+version = "0.1.0"
+description = "ANIE - standalone network engineering AI system (Phase 0 foundation)"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+anie = "cli.main:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*", "cli*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
