@@ -13,10 +13,12 @@ import sys
 
 from dotenv import load_dotenv
 
+from app.capabilities.definitions import build_default_registry
 from app.core.agent import Agent
 from app.core.config import Config, ConfigError
 from app.core.logging_setup import configure_logging
 from app.core.types import ExecutionResult
+from app.mcp.bootstrap import build_capability_executor
 from app.models.router import ModelRouter, UnsupportedProviderError
 
 PROMPT = "ANIE > "
@@ -32,7 +34,15 @@ def build_agent(config_path: str | None = None) -> Agent:
     config = Config.load(config_path)
     configure_logging(config.runtime.log_level)
     router = ModelRouter(config)
-    return Agent(router)
+
+    # Phase 2: optionally wire up MCP-backed network capabilities. This is
+    # entirely additive — with no `mcp.servers` configured (or if every
+    # configured server fails to connect), `tool_executor` is None and the
+    # Agent behaves exactly like Phase 1.
+    registry = build_default_registry()
+    tool_executor = build_capability_executor(config, registry)
+
+    return Agent(router, tool_executor=tool_executor)
 
 
 def format_error(result: ExecutionResult, debug: bool) -> str:

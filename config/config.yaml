@@ -23,3 +23,24 @@ model:
 
 runtime:
   log_level: INFO
+
+# Phase 2: optional MCP/network-capability servers. Uncomment and edit the
+# `mikrotik` entry to point at a real RouterOS device to give ANIE live,
+# read-only network visibility. Credentials are NEVER put here — export
+# MIKROTIK_USERNAME/MIKROTIK_PASSWORD (see .env.example) before running
+# ANIE; the mikrotik_server process reads them directly from the
+# environment. Leaving `mcp.servers` empty/omitted (the default) means
+# ANIE runs with no tools at all, exactly like Phase 0/1.
+#
+# mcp:
+#   servers:
+#     - name: mikrotik
+#       transport: stdio
+#       command: python
+#       args: ["-m", "app.mcp.servers.mikrotik_server", "--host", "10.0.0.1"]
+#       timeout_seconds: 15
+#     - name: generic
+#       transport: stdio
+#       command: python
+#       args: ["-m", "app.mcp.servers.generic_server"]
+#       timeout_seconds: 10

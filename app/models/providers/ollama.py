@@ -6,14 +6,39 @@ Talks to a local (or remote) Ollama server via its HTTP API
 
 from __future__ import annotations
 
+import json
 import logging
 
 import requests
 
-from app.core.types import Context, ErrorCode, ExecutionResult
+from app.core.types import Context, ErrorCode, ExecutionResult, ToolCall
 from app.models.base import ModelProvider
 
 logger = logging.getLogger("anie.provider.ollama")
+
+
+def _parse_tool_calls(raw_tool_calls: list[dict]) -> list[ToolCall]:
+    """Normalize a provider-native tool_calls list into ToolCall objects.
+
+    Ollama's chat API (when a model supports tool calling) returns
+    `message.tool_calls` as a list of `{"function": {"name", "arguments"}}`
+    entries, with `arguments` already a dict (unlike NVIDIA/OpenAI-style
+    APIs, which send it as a JSON string) -- handle both shapes to be safe.
+    """
+    tool_calls: list[ToolCall] = []
+    for index, raw in enumerate(raw_tool_calls or []):
+        function = raw.get("function") or {}
+        name = function.get("name", "")
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (ValueError, TypeError):
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        tool_calls.append(ToolCall(id=raw.get("id") or f"call_{index}", name=name, arguments=arguments))
+    return tool_calls
 
 
 class OllamaProvider(ModelProvider):
@@ -31,6 +56,8 @@ class OllamaProvider(ModelProvider):
             "messages": context.as_prompt_messages(),
             "stream": False,
         }
+        if context.tools:
+            payload["tools"] = context.tools
 
         logger.info(
             "model.request",
@@ -101,6 +128,16 @@ class OllamaProvider(ModelProvider):
             )
 
         message = data.get("message") or {}
+
+        tool_calls_raw = message.get("tool_calls")
+        if tool_calls_raw:
+            tool_calls = _parse_tool_calls(tool_calls_raw)
+            logger.info(
+                "model.tool_call",
+                extra={"component": "ollama_provider", "event": "model.tool_call", "model": self.model},
+            )
+            return ExecutionResult.tool_call_requested(tool_calls, model=self.model, provider="ollama")
+
         content = message.get("content")
         if not content:
             return ExecutionResult.fail(
@@ -123,3 +160,11 @@ class OllamaProvider(ModelProvider):
             return response.status_code == 200
         except requests.exceptions.RequestException:
             return False
+
+    def capabilities(self) -> dict[str, bool]:
+        return {
+            "text": True,
+            "streaming": False,
+            "tool_calling": True,
+            "vision": False,
+        }

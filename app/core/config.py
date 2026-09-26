@@ -4,16 +4,23 @@ Configuration is loaded from a YAML file, with environment variables allowed
 to override specific fields (mainly secrets / deployment-specific settings
 that should not be committed to source control).
 
-Phase 1 extends Phase 0's single `model.primary` section with an optional
+Phase 1 extended Phase 0's single `model.primary` section with an optional
 `model.fallback` section (and a shared `model.timeout` default), so the
 ModelRouter can fall back from Ollama to NVIDIA (or any other supported
 provider) when the primary provider fails.
+
+Phase 2 adds an optional `mcp.servers` section: a list of MCP servers ANIE
+should launch/connect to (stdio transport only, for now) to expose network
+capabilities to the model. Like the NVIDIA API key, any credentials an
+individual MCP server/adapter needs (e.g. MikroTik username/password) are
+NEVER read here — they are read directly from the environment by that
+adapter's own process, at request time.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,8 +32,10 @@ class ConfigError(Exception):
 
 
 SUPPORTED_PROVIDERS = {"ollama", "nvidia"}
+SUPPORTED_MCP_TRANSPORTS = {"stdio"}
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_MCP_TIMEOUT_SECONDS = 15.0
 
 # NVIDIA-specific defaults. The API key itself is NEVER read from the config
 # file or hardcoded here — only the *name* of the environment variable that
@@ -58,6 +67,29 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class McpServerConfig:
+    """One MCP server ANIE should connect to.
+
+    `command`/`args` describe how to launch it (stdio transport): this is
+    intentionally the *only* transport Phase 2 supports, matching the
+    "minimal MCP client abstraction" scope — the `Transport` interface
+    itself (see `app.mcp.transport`) is not limited to stdio, so other
+    transports can be added later without touching this config shape much.
+    """
+
+    name: str
+    command: str
+    transport: str = "stdio"
+    args: tuple[str, ...] = ()
+    timeout_seconds: float = DEFAULT_MCP_TIMEOUT_SECONDS
+
+
+@dataclass(frozen=True)
+class McpConfig:
+    servers: tuple[McpServerConfig, ...] = ()
+
+
+@dataclass(frozen=True)
 class Config:
     app: AppConfig
     model: ModelConfig
@@ -65,6 +97,9 @@ class Config:
     # Optional fallback provider. None means Phase-0-style behavior: no
     # fallback configured, primary-only.
     fallback: Optional[ModelConfig] = None
+    # Optional MCP/tool layer. Empty means Phase-0/1-style behavior: no
+    # tools available to the model at all.
+    mcp: McpConfig = field(default_factory=McpConfig)
 
     @staticmethod
     def load(path: Optional[str] = None) -> "Config":
@@ -127,7 +162,9 @@ def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
 
     Provider API keys themselves (e.g. NVIDIA_API_KEY) are never read here —
     providers read their own credential env vars directly at request time,
-    so secrets never pass through the config dict.
+    so secrets never pass through the config dict. The same is true of any
+    MCP server/adapter credentials (e.g. MIKROTIK_USERNAME/PASSWORD) — there
+    are intentionally no env overrides for `mcp.*` here.
     """
     raw = dict(raw)
     model = dict(raw.get("model", {}) or {})
@@ -222,12 +259,53 @@ def _build_model_config(section_name: str, section_raw: dict[str, Any], shared_t
     )
 
 
+def _build_mcp_server_config(section_raw: dict[str, Any]) -> McpServerConfig:
+    name = section_raw.get("name")
+    if not name:
+        raise ConfigError("mcp.servers[].name is required")
+    name = str(name)
+
+    transport = str(section_raw.get("transport", "stdio"))
+    if transport not in SUPPORTED_MCP_TRANSPORTS:
+        raise ConfigError(
+            f"Unsupported MCP transport '{transport}' for server '{name}'. "
+            f"Supported transports: {sorted(SUPPORTED_MCP_TRANSPORTS)}"
+        )
+
+    command = section_raw.get("command")
+    if not command:
+        raise ConfigError(f"mcp.servers['{name}'].command is required")
+
+    args_raw = section_raw.get("args", []) or []
+    if not isinstance(args_raw, list):
+        raise ConfigError(f"mcp.servers['{name}'].args must be a list")
+
+    timeout_raw = section_raw.get("timeout_seconds", DEFAULT_MCP_TIMEOUT_SECONDS)
+    try:
+        timeout_seconds = float(timeout_raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f"mcp.servers['{name}'].timeout_seconds must be a number, got: {timeout_raw!r}"
+        ) from exc
+    if timeout_seconds <= 0:
+        raise ConfigError(f"mcp.servers['{name}'].timeout_seconds must be > 0")
+
+    return McpServerConfig(
+        name=name,
+        transport=transport,
+        command=str(command),
+        args=tuple(str(a) for a in args_raw),
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def _build_config(raw: dict[str, Any]) -> Config:
     app_raw = raw.get("app", {}) or {}
     model_raw = raw.get("model", {}) or {}
     primary_raw = model_raw.get("primary", {}) or {}
     fallback_raw = model_raw.get("fallback", {}) or {}
     runtime_raw = raw.get("runtime", {}) or {}
+    mcp_raw = raw.get("mcp", {}) or {}
 
     app = AppConfig(
         name=str(app_raw.get("name", "ANIE")),
@@ -250,4 +328,9 @@ def _build_config(raw: dict[str, Any]) -> Config:
         )
     runtime = RuntimeConfig(log_level=log_level)
 
-    return Config(app=app, model=model, runtime=runtime, fallback=fallback)
+    servers_raw = mcp_raw.get("servers", []) or []
+    if not isinstance(servers_raw, list):
+        raise ConfigError("mcp.servers must be a list")
+    mcp = McpConfig(servers=tuple(_build_mcp_server_config(s) for s in servers_raw))
+
+    return Config(app=app, model=model, runtime=runtime, fallback=fallback, mcp=mcp)

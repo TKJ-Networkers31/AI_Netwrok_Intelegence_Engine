@@ -23,6 +23,12 @@ class ModelProvider(ABC):
         (connection errors, timeouts, model-not-found, etc.) — they should
         catch those and return a failed ExecutionResult with a structured
         ExecutionError instead. Unexpected exceptions may propagate.
+
+        Phase 2: if `context.tools` is set and the provider/model supports
+        tool calling, a provider may return
+        `ExecutionResult.tool_call_requested(...)` instead of a text
+        response. Providers that don't support tool calling should simply
+        ignore `context.tools` and always return a text response.
         """
         raise NotImplementedError
 

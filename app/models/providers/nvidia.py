@@ -12,17 +12,40 @@ in an ExecutionError's message/details.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
 import requests
 
-from app.core.types import Context, ErrorCode, ExecutionResult
+from app.core.types import Context, ErrorCode, ExecutionResult, ToolCall
 from app.models.base import ModelProvider
 
 logger = logging.getLogger("anie.provider.nvidia")
 
 DEFAULT_API_KEY_ENV = "NVIDIA_API_KEY"
+
+
+def _parse_tool_calls(raw_tool_calls: list[dict]) -> list[ToolCall]:
+    """Normalize an OpenAI-style tool_calls list into ToolCall objects.
+
+    NVIDIA's OpenAI-compatible endpoint sends `arguments` as a JSON string
+    (per the OpenAI function-calling contract), not a dict.
+    """
+    tool_calls: list[ToolCall] = []
+    for index, raw in enumerate(raw_tool_calls or []):
+        function = raw.get("function") or {}
+        name = function.get("name", "")
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (ValueError, TypeError):
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        tool_calls.append(ToolCall(id=raw.get("id") or f"call_{index}", name=name, arguments=arguments))
+    return tool_calls
 
 
 class NvidiaProvider(ModelProvider):
@@ -65,6 +88,8 @@ class NvidiaProvider(ModelProvider):
             "messages": context.as_prompt_messages(),
             "stream": False,
         }
+        if context.tools:
+            payload["tools"] = context.tools
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -153,9 +178,18 @@ class NvidiaProvider(ModelProvider):
             )
 
         choices = data.get("choices") or []
-        content = None
-        if choices:
-            content = (choices[0].get("message") or {}).get("content")
+        message = (choices[0].get("message") or {}) if choices else {}
+
+        tool_calls_raw = message.get("tool_calls")
+        if tool_calls_raw:
+            tool_calls = _parse_tool_calls(tool_calls_raw)
+            logger.info(
+                "model.tool_call",
+                extra={"component": "nvidia_provider", "event": "model.tool_call", "model": self.model},
+            )
+            return ExecutionResult.tool_call_requested(tool_calls, model=self.model, provider="nvidia")
+
+        content = message.get("content")
 
         if not content:
             return ExecutionResult.fail(
@@ -188,6 +222,6 @@ class NvidiaProvider(ModelProvider):
         return {
             "text": True,
             "streaming": False,
-            "tool_calling": False,
+            "tool_calling": True,
             "vision": False,
         }

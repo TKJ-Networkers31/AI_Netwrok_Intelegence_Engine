@@ -131,3 +131,36 @@ def test_health_check_false_on_connection_error(mock_get):
     provider = make_provider()
 
     assert provider.health_check() is False
+
+
+# --- Phase 2: tool-calling passthrough ---------------------------------
+
+
+@patch("app.models.providers.ollama.requests.post")
+def test_generate_passes_tools_and_parses_tool_calls(mock_post):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "ping", "arguments": {"host": "10.0.0.1"}}}
+            ],
+        }
+    }
+    mock_post.return_value = mock_response
+
+    context = make_context()
+    context.tools = [{"type": "function", "function": {"name": "ping", "parameters": {}}}]
+
+    provider = make_provider()
+    result = provider.generate(context)
+
+    assert result.success is True
+    assert result.response is None
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "ping"
+    assert result.tool_calls[0].arguments == {"host": "10.0.0.1"}
+    _, kwargs = mock_post.call_args
+    assert kwargs["json"]["tools"] == context.tools

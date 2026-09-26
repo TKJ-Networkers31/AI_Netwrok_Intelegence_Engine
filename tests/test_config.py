@@ -250,3 +250,102 @@ def test_no_api_key_read_into_config(tmp_path, monkeypatch):
 
     assert config.fallback.api_key_env == "NVIDIA_API_KEY"
     assert "super-secret-value" not in repr(config)
+
+
+# --- Phase 2: MCP server config tests ----------------------------------------
+
+
+def test_no_mcp_section_means_no_servers(tmp_path):
+    path = _write_config(tmp_path, VALID_CONFIG)
+
+    config = Config.load(path)
+
+    assert config.mcp.servers == ()
+
+
+def test_mcp_servers_section_loads(tmp_path):
+    data = dict(VALID_CONFIG)
+    data["mcp"] = {
+        "servers": [
+            {
+                "name": "mikrotik",
+                "transport": "stdio",
+                "command": "python",
+                "args": ["-m", "app.mcp.servers.mikrotik_server", "--host", "10.0.0.1"],
+                "timeout_seconds": 20,
+            },
+            {
+                "name": "generic",
+                "command": "python",
+                "args": ["-m", "app.mcp.servers.generic_server"],
+            },
+        ]
+    }
+    path = _write_config(tmp_path, data)
+
+    config = Config.load(path)
+
+    assert len(config.mcp.servers) == 2
+    mikrotik = config.mcp.servers[0]
+    assert mikrotik.name == "mikrotik"
+    assert mikrotik.transport == "stdio"
+    assert mikrotik.command == "python"
+    assert mikrotik.args == ("-m", "app.mcp.servers.mikrotik_server", "--host", "10.0.0.1")
+    assert mikrotik.timeout_seconds == 20
+
+    generic = config.mcp.servers[1]
+    assert generic.transport == "stdio"  # default
+    assert generic.timeout_seconds == 15.0  # default
+
+
+def test_mcp_server_missing_name_fails_clearly(tmp_path):
+    data = dict(VALID_CONFIG)
+    data["mcp"] = {"servers": [{"command": "python"}]}
+    path = _write_config(tmp_path, data)
+
+    with pytest.raises(ConfigError, match="mcp.servers\\[\\].name"):
+        Config.load(path)
+
+
+def test_mcp_server_missing_command_fails_clearly(tmp_path):
+    data = dict(VALID_CONFIG)
+    data["mcp"] = {"servers": [{"name": "mikrotik"}]}
+    path = _write_config(tmp_path, data)
+
+    with pytest.raises(ConfigError, match="command"):
+        Config.load(path)
+
+
+def test_mcp_server_unsupported_transport_fails_clearly(tmp_path):
+    data = dict(VALID_CONFIG)
+    data["mcp"] = {"servers": [{"name": "mikrotik", "transport": "http", "command": "x"}]}
+    path = _write_config(tmp_path, data)
+
+    with pytest.raises(ConfigError, match="Unsupported MCP transport"):
+        Config.load(path)
+
+
+def test_mcp_server_invalid_timeout_fails_clearly(tmp_path):
+    data = dict(VALID_CONFIG)
+    data["mcp"] = {
+        "servers": [{"name": "mikrotik", "command": "x", "timeout_seconds": "nope"}]
+    }
+    path = _write_config(tmp_path, data)
+
+    with pytest.raises(ConfigError, match="timeout_seconds"):
+        Config.load(path)
+
+
+def test_no_mcp_credentials_read_into_config(tmp_path, monkeypatch):
+    """MikroTik (or any adapter) credentials must never end up in Config —
+    they are read directly by the adapter process from the environment."""
+    data = dict(VALID_CONFIG)
+    data["mcp"] = {
+        "servers": [{"name": "mikrotik", "command": "python", "args": ["-m", "x"]}]
+    }
+    path = _write_config(tmp_path, data)
+    monkeypatch.setenv("MIKROTIK_PASSWORD", "super-secret-password")
+
+    config = Config.load(path)
+
+    assert "super-secret-password" not in repr(config)
