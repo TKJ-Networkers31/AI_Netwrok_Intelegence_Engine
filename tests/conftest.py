@@ -49,14 +49,41 @@ def valid_config() -> Config:
     )
 
 
-class FakeRouter:
-    """Stand-in for ModelRouter that just returns a pre-built provider."""
+@pytest.fixture
+def valid_config_with_fallback(valid_config: Config) -> Config:
+    return Config(
+        app=valid_config.app,
+        model=valid_config.model,
+        runtime=valid_config.runtime,
+        fallback=ModelConfig(
+            provider="nvidia",
+            model="meta/llama-3.1-8b-instruct",
+            base_url="https://integrate.api.nvidia.com/v1",
+            timeout_seconds=5.0,
+            api_key_env="NVIDIA_API_KEY",
+        ),
+    )
 
-    def __init__(self, provider: ModelProvider):
+
+class FakeRouter:
+    """Stand-in for ModelRouter that just returns pre-built provider(s).
+
+    `fallback_provider` defaults to None, matching Phase 0 behavior (no
+    fallback configured). Agent treats a router with no
+    `get_fallback_provider` method, or one that returns None, identically.
+    """
+
+    def __init__(
+        self, provider: ModelProvider, fallback_provider: Optional[ModelProvider] = None
+    ):
         self._provider = provider
+        self._fallback_provider = fallback_provider
 
     def get_provider(self) -> ModelProvider:
         return self._provider
+
+    def get_fallback_provider(self) -> Optional[ModelProvider]:
+        return self._fallback_provider
 
 
 @pytest.fixture
@@ -65,5 +92,17 @@ def fake_provider() -> FakeProvider:
 
 
 @pytest.fixture
+def fake_fallback_provider() -> FakeProvider:
+    return FakeProvider(response="fallback response")
+
+
+@pytest.fixture
 def fake_router(fake_provider: FakeProvider) -> FakeRouter:
     return FakeRouter(fake_provider)
+
+
+@pytest.fixture
+def fake_router_with_fallback(
+    fake_provider: FakeProvider, fake_fallback_provider: FakeProvider
+) -> FakeRouter:
+    return FakeRouter(fake_provider, fallback_provider=fake_fallback_provider)

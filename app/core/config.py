@@ -3,6 +3,11 @@
 Configuration is loaded from a YAML file, with environment variables allowed
 to override specific fields (mainly secrets / deployment-specific settings
 that should not be committed to source control).
+
+Phase 1 extends Phase 0's single `model.primary` section with an optional
+`model.fallback` section (and a shared `model.timeout` default), so the
+ModelRouter can fall back from Ollama to NVIDIA (or any other supported
+provider) when the primary provider fails.
 """
 
 from __future__ import annotations
@@ -19,7 +24,15 @@ class ConfigError(Exception):
     """Raised when configuration is missing, malformed, or invalid."""
 
 
-SUPPORTED_PROVIDERS = {"ollama"}
+SUPPORTED_PROVIDERS = {"ollama", "nvidia"}
+
+DEFAULT_TIMEOUT_SECONDS = 60.0
+
+# NVIDIA-specific defaults. The API key itself is NEVER read from the config
+# file or hardcoded here — only the *name* of the environment variable that
+# holds it, so the actual secret always comes from the environment.
+DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+DEFAULT_NVIDIA_API_KEY_ENV = "NVIDIA_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -33,7 +46,10 @@ class ModelConfig:
     provider: str
     model: str
     base_url: str
-    timeout_seconds: float = 60.0
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    # Name of the environment variable holding this provider's API key, if
+    # any (e.g. "NVIDIA_API_KEY"). Never the key value itself.
+    api_key_env: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +62,9 @@ class Config:
     app: AppConfig
     model: ModelConfig
     runtime: RuntimeConfig
+    # Optional fallback provider. None means Phase-0-style behavior: no
+    # fallback configured, primary-only.
+    fallback: Optional[ModelConfig] = None
 
     @staticmethod
     def load(path: Optional[str] = None) -> "Config":
@@ -97,15 +116,23 @@ def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
     """Apply environment variable overrides for secrets/deployment settings.
 
     Supported overrides:
-        ANIE_MODEL_PROVIDER
-        ANIE_MODEL_NAME
-        ANIE_MODEL_BASE_URL
-        ANIE_MODEL_TIMEOUT_SECONDS
-        ANIE_LOG_LEVEL
+        ANIE_CONFIG_PATH
+        ANIE_MODEL_PROVIDER / ANIE_MODEL_NAME / ANIE_MODEL_BASE_URL /
+            ANIE_MODEL_TIMEOUT_SECONDS               (model.primary.*)
+        ANIE_FALLBACK_PROVIDER / ANIE_FALLBACK_MODEL / ANIE_FALLBACK_BASE_URL /
+            ANIE_FALLBACK_TIMEOUT_SECONDS / ANIE_FALLBACK_API_KEY_ENV
+                                                      (model.fallback.*)
+        ANIE_MODEL_TIMEOUT                           (shared model.timeout)
+        ANIE_LOG_LEVEL                                (runtime.log_level)
+
+    Provider API keys themselves (e.g. NVIDIA_API_KEY) are never read here —
+    providers read their own credential env vars directly at request time,
+    so secrets never pass through the config dict.
     """
     raw = dict(raw)
     model = dict(raw.get("model", {}) or {})
     primary = dict(model.get("primary", {}) or {})
+    fallback = dict(model.get("fallback", {}) or {})
     runtime = dict(raw.get("runtime", {}) or {})
 
     if "ANIE_MODEL_PROVIDER" in os.environ:
@@ -116,19 +143,90 @@ def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         primary["base_url"] = os.environ["ANIE_MODEL_BASE_URL"]
     if "ANIE_MODEL_TIMEOUT_SECONDS" in os.environ:
         primary["timeout_seconds"] = os.environ["ANIE_MODEL_TIMEOUT_SECONDS"]
+
+    if "ANIE_FALLBACK_PROVIDER" in os.environ:
+        fallback["provider"] = os.environ["ANIE_FALLBACK_PROVIDER"]
+    if "ANIE_FALLBACK_MODEL" in os.environ:
+        fallback["model"] = os.environ["ANIE_FALLBACK_MODEL"]
+    if "ANIE_FALLBACK_BASE_URL" in os.environ:
+        fallback["base_url"] = os.environ["ANIE_FALLBACK_BASE_URL"]
+    if "ANIE_FALLBACK_TIMEOUT_SECONDS" in os.environ:
+        fallback["timeout_seconds"] = os.environ["ANIE_FALLBACK_TIMEOUT_SECONDS"]
+    if "ANIE_FALLBACK_API_KEY_ENV" in os.environ:
+        fallback["api_key_env"] = os.environ["ANIE_FALLBACK_API_KEY_ENV"]
+
+    if "ANIE_MODEL_TIMEOUT" in os.environ:
+        model["timeout"] = os.environ["ANIE_MODEL_TIMEOUT"]
+
     if "ANIE_LOG_LEVEL" in os.environ:
         runtime["log_level"] = os.environ["ANIE_LOG_LEVEL"]
 
     model["primary"] = primary
+    # Only keep a fallback section if it actually has content (from the YAML
+    # file and/or env overrides) — an empty section means "no fallback".
+    if fallback:
+        model["fallback"] = fallback
     raw["model"] = model
     raw["runtime"] = runtime
     return raw
+
+
+def _build_model_config(section_name: str, section_raw: dict[str, Any], shared_timeout: Any) -> ModelConfig:
+    """Build and validate a single provider section (primary or fallback).
+
+    `section_name` is used purely for error messages (e.g. "model.primary").
+    """
+    provider = section_raw.get("provider")
+    if not provider:
+        raise ConfigError(f"{section_name}.provider is required")
+    provider = str(provider)
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ConfigError(
+            f"Unsupported model provider '{provider}' in {section_name}. "
+            f"Supported providers: {sorted(SUPPORTED_PROVIDERS)}"
+        )
+
+    model_name = section_raw.get("model")
+    if not model_name:
+        raise ConfigError(f"{section_name}.model is required")
+
+    base_url = section_raw.get("base_url")
+    if not base_url and provider == "nvidia":
+        base_url = DEFAULT_NVIDIA_BASE_URL
+    if not base_url:
+        raise ConfigError(f"{section_name}.base_url is required")
+
+    timeout_raw = section_raw.get(
+        "timeout_seconds",
+        shared_timeout if shared_timeout is not None else DEFAULT_TIMEOUT_SECONDS,
+    )
+    try:
+        timeout_seconds = float(timeout_raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f"{section_name}.timeout_seconds must be a number, got: {timeout_raw!r}"
+        ) from exc
+    if timeout_seconds <= 0:
+        raise ConfigError(f"{section_name}.timeout_seconds must be > 0")
+
+    api_key_env = section_raw.get("api_key_env")
+    if not api_key_env and provider == "nvidia":
+        api_key_env = DEFAULT_NVIDIA_API_KEY_ENV
+
+    return ModelConfig(
+        provider=provider,
+        model=str(model_name),
+        base_url=str(base_url),
+        timeout_seconds=timeout_seconds,
+        api_key_env=str(api_key_env) if api_key_env else None,
+    )
 
 
 def _build_config(raw: dict[str, Any]) -> Config:
     app_raw = raw.get("app", {}) or {}
     model_raw = raw.get("model", {}) or {}
     primary_raw = model_raw.get("primary", {}) or {}
+    fallback_raw = model_raw.get("fallback", {}) or {}
     runtime_raw = raw.get("runtime", {}) or {}
 
     app = AppConfig(
@@ -136,40 +234,13 @@ def _build_config(raw: dict[str, Any]) -> Config:
         environment=str(app_raw.get("environment", "development")),
     )
 
-    provider = primary_raw.get("provider")
-    if not provider:
-        raise ConfigError("model.primary.provider is required")
-    provider = str(provider)
-    if provider not in SUPPORTED_PROVIDERS:
-        raise ConfigError(
-            f"Unsupported model provider '{provider}'. "
-            f"Supported providers: {sorted(SUPPORTED_PROVIDERS)}"
-        )
+    shared_timeout = model_raw.get("timeout")
 
-    model_name = primary_raw.get("model")
-    if not model_name:
-        raise ConfigError("model.primary.model is required")
+    model = _build_model_config("model.primary", primary_raw, shared_timeout)
 
-    base_url = primary_raw.get("base_url")
-    if not base_url:
-        raise ConfigError("model.primary.base_url is required")
-
-    timeout_raw = primary_raw.get("timeout_seconds", 60.0)
-    try:
-        timeout_seconds = float(timeout_raw)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(
-            f"model.primary.timeout_seconds must be a number, got: {timeout_raw!r}"
-        ) from exc
-    if timeout_seconds <= 0:
-        raise ConfigError("model.primary.timeout_seconds must be > 0")
-
-    model = ModelConfig(
-        provider=provider,
-        model=str(model_name),
-        base_url=str(base_url),
-        timeout_seconds=timeout_seconds,
-    )
+    fallback: Optional[ModelConfig] = None
+    if fallback_raw:
+        fallback = _build_model_config("model.fallback", fallback_raw, shared_timeout)
 
     log_level = str(runtime_raw.get("log_level", "INFO")).upper()
     valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -179,4 +250,4 @@ def _build_config(raw: dict[str, Any]) -> Config:
         )
     runtime = RuntimeConfig(log_level=log_level)
 
-    return Config(app=app, model=model, runtime=runtime)
+    return Config(app=app, model=model, runtime=runtime, fallback=fallback)

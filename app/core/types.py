@@ -31,8 +31,10 @@ class Message:
 class Context:
     """Minimal structured context passed from the Agent to a ModelProvider.
 
-    Phase 0 does not implement persistent memory: a Context only exists for
-    the lifetime of a single `agent.run(...)` call.
+    Phase 0/1 do not implement persistent memory: a Context only exists for
+    the lifetime of a single `agent.run(...)` call. It stays
+    provider-independent: it knows about system prompt + a conversation of
+    messages, nothing about how a specific provider serializes them.
     """
 
     system_prompt: Optional[str] = None
@@ -49,7 +51,7 @@ class Context:
 
         This is a convenience representation useful for providers whose APIs
         expect a list of {"role": ..., "content": ...} dicts (e.g. Ollama's
-        chat endpoint).
+        chat endpoint and NVIDIA's OpenAI-compatible chat endpoint).
         """
         result: list[dict[str, str]] = []
         if self.system_prompt:
@@ -71,6 +73,8 @@ class ErrorCode(str, Enum):
     CONNECTION_TIMEOUT = "connection_timeout"
     MODEL_UNAVAILABLE = "model_unavailable"
     MODEL_REQUEST_FAILED = "model_request_failed"
+    AUTHENTICATION_FAILED = "authentication_failed"
+    ALL_PROVIDERS_FAILED = "all_providers_failed"
     UNKNOWN = "unknown"
 
 

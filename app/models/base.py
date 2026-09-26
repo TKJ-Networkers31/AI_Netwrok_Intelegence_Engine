@@ -32,3 +32,17 @@ class ModelProvider(ABC):
         requests, False otherwise. Must not raise.
         """
         raise NotImplementedError
+
+    def capabilities(self) -> dict[str, bool]:
+        """Return lightweight capability metadata for this provider.
+
+        Phase 1 scope: a flat, static dict — no capability registry, no
+        capability-based routing. Providers that support more than plain
+        text generation should override this.
+        """
+        return {
+            "text": True,
+            "streaming": False,
+            "tool_calling": False,
+            "vision": False,
+        }

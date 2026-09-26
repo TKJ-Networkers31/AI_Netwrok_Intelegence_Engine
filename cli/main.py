@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from dotenv import load_dotenv
+
 from app.core.agent import Agent
 from app.core.config import Config, ConfigError
 from app.core.logging_setup import configure_logging
@@ -21,6 +23,12 @@ PROMPT = "ANIE > "
 
 
 def build_agent(config_path: str | None = None) -> Agent:
+    # Load variables from a .env file (searched in the current directory and
+    # its parents) into the process environment, *without* overriding any
+    # variable that's already set (e.g. via `export`/`$env:`) — those still
+    # win. This never touches config.yaml; it only populates os.environ
+    # before Config.load()/provider construction read it.
+    load_dotenv()
     config = Config.load(config_path)
     configure_logging(config.runtime.log_level)
     router = ModelRouter(config)
