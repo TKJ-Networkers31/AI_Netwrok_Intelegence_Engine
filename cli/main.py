@@ -13,12 +13,10 @@ import sys
 
 from dotenv import load_dotenv
 
-from app.capabilities.definitions import build_default_registry
 from app.core.agent import Agent
 from app.core.config import Config, ConfigError
 from app.core.logging_setup import configure_logging
 from app.core.types import ExecutionResult
-from app.mcp.bootstrap import build_capability_executor
 from app.models.router import ModelRouter, UnsupportedProviderError
 
 PROMPT = "ANIE > "
@@ -35,14 +33,16 @@ def build_agent(config_path: str | None = None) -> Agent:
     configure_logging(config.runtime.log_level)
     router = ModelRouter(config)
 
-    # Phase 2: optionally wire up MCP-backed network capabilities. This is
-    # entirely additive — with no `mcp.servers` configured (or if every
-    # configured server fails to connect), `tool_executor` is None and the
-    # Agent behaves exactly like Phase 1.
-    registry = build_default_registry()
-    tool_executor = build_capability_executor(config, registry)
-
-    return Agent(router, tool_executor=tool_executor)
+    # MCP/network-extraction phase: the vendor-specific capability
+    # registry and the CapabilityExecutor that used to wire `config.mcp.
+    # servers` into the Agent's tool loop have been extracted out of ANIE
+    # (see archive/phase2-mcp-network-extraction/ and README.md). ANIE is
+    # being prepared to become an MCP Host + MCP Client; a new, MCP
+    # Client-backed tool executor will be wired in here once that layer
+    # exists. Until then, ANIE always runs with no tools available to the
+    # model — identical to Phase 0/1 behavior — even if `mcp.servers` is
+    # populated in config.yaml.
+    return Agent(router, tool_executor=None)
 
 
 def format_error(result: ExecutionResult, debug: bool) -> str:

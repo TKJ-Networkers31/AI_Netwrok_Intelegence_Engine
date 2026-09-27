@@ -3,8 +3,11 @@
 Mirrors the way `app.models.base.ModelProvider` implementations turn
 expected failure modes into `ExecutionResult.fail(...)` rather than letting
 raw exceptions cross abstraction boundaries — the MCP client instead raises
-a small, closed set of typed exceptions that `CapabilityExecutor` catches
-and turns into a structured `ToolResult`.
+a small, closed set of typed exceptions that a host-side tool-execution
+layer (see `app.core.agent.ToolExecutor`) can catch and turn into a
+structured tool result. ANIE's own `CapabilityExecutor` implementation of
+that layer was extracted to `archive/phase2-mcp-network-extraction/` — see
+README.md.
 """
 
 from __future__ import annotations

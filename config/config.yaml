@@ -24,23 +24,25 @@ model:
 runtime:
   log_level: INFO
 
-# Phase 2: optional MCP/network-capability servers. Uncomment and edit the
-# `mikrotik` entry to point at a real RouterOS device to give ANIE live,
-# read-only network visibility. Credentials are NEVER put here — export
-# MIKROTIK_USERNAME/MIKROTIK_PASSWORD (see .env.example) before running
-# ANIE; the mikrotik_server process reads them directly from the
-# environment. Leaving `mcp.servers` empty/omitted (the default) means
-# ANIE runs with no tools at all, exactly like Phase 0/1.
+# MCP servers ANIE (as an MCP Host/Client) can connect to. As of the
+# MCP/network-extraction phase, ANIE no longer ships or launches any
+# vendor-specific MCP server itself (MikroTik, generic network diagnostics,
+# and Linux placeholders were moved to archive/phase2-mcp-network-extraction/
+# — see README.md for the new architecture). `mcp.servers` config parsing
+# still exists (`app/mcp/transport.py` + `app/mcp/client.py` remain as the
+# generic MCP Client skeleton), but nothing in ANIE currently wires a
+# connected server into the Agent's tool loop, so leaving this empty (the
+# default) is required for now, not just typical.
+#
+# Once a standalone MCP-MikroTik (or MCP-Network) server exists as its own
+# project, it can be pointed to here with a placeholder shape like:
 #
 # mcp:
 #   servers:
-#     - name: mikrotik
+#     - name: your-mcp-server
 #       transport: stdio
 #       command: python
-#       args: ["-m", "app.mcp.servers.mikrotik_server", "--host", "10.0.0.1"]
+#       args: ["-m", "your_mcp_server_package"]
 #       timeout_seconds: 15
-#     - name: generic
-#       transport: stdio
-#       command: python
-#       args: ["-m", "app.mcp.servers.generic_server"]
-#       timeout_seconds: 10
+mcp:
+  servers: []

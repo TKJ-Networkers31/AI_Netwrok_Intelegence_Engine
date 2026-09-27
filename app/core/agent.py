@@ -2,25 +2,36 @@
 
 The Agent is the single entry point used by callers (CLI, and later other
 interfaces). It knows nothing about specific providers — it only talks to
-the ModelRouter/ModelProvider abstraction, the EventBus, and (Phase 2) an
-optional CapabilityExecutor.
+the ModelRouter/ModelProvider abstraction, the EventBus, and an optional
+tool executor.
 
 Phase 1 added automatic fallback: if the primary provider's `generate()`
 call fails with a recoverable (runtime/provider) error, and the router has
 a fallback provider configured, the Agent retries the same Context against
 the fallback provider before giving up.
 
-Phase 2 adds a bounded tool-calling loop on top of that: if a provider
-returns `ExecutionResult.tool_call_requested(...)` (because the model asked
-to invoke one or more tools) and a `CapabilityExecutor` was supplied, the
-Agent executes each requested tool through the execution boundary
-(allowlist -> schema validation -> permission/risk check -> MCP invocation),
-appends the (structured, JSON-serialized) result back into the Context as a
-tool message, and calls the provider again. This repeats up to
-`max_tool_iterations` times, after which the Agent gives up with a
-structured `TOOL_EXECUTION_FAILED` error rather than looping forever — this
-is deliberately NOT autonomous multi-step reasoning/planning, just a small,
-bounded "ask -> tool -> ask again" loop.
+Phase 2 (original) added a bounded tool-calling loop on top of that: if a
+provider returns `ExecutionResult.tool_call_requested(...)` (because the
+model asked to invoke one or more tools) and a `tool_executor` was
+supplied, the Agent executes each requested tool, appends the (structured,
+JSON-serialized) result back into the Context as a tool message, and calls
+the provider again. This repeats up to `max_tool_iterations` times, after
+which the Agent gives up with a structured `TOOL_EXECUTION_FAILED` error
+rather than looping forever — this is deliberately NOT autonomous
+multi-step reasoning/planning, just a small, bounded "ask -> tool -> ask
+again" loop.
+
+MCP/network-extraction phase note: the concrete `CapabilityExecutor` this
+loop originally called lived in `app.capabilities.executor`, which has
+been extracted out of ANIE (see `archive/phase2-mcp-network-extraction/`)
+along with the vendor-specific capability definitions and adapters it
+depended on. The loop itself is intentionally kept here — it is generic
+host-side orchestration, not vendor-specific — and is typed against a
+minimal local `ToolExecutor` protocol below rather than importing the
+removed module. A future MCP Client-backed tool executor (registry lookup
+-> schema validation -> MCP invocation) can be handed to `Agent` the same
+way the old `CapabilityExecutor` was, as long as it implements `execute()`
+and `get_tool_definitions()`.
 """
 
 from __future__ import annotations
@@ -28,16 +39,29 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import TYPE_CHECKING, Optional
+from typing import Any, Optional, Protocol
 
 from app.core.types import Context, ErrorCode, ExecutionResult
 from app.events.bus import Event, EventBus
 from app.models.router import ModelRouter
 
-if TYPE_CHECKING:
-    from app.capabilities.executor import CapabilityExecutor
-
 logger = logging.getLogger("anie.agent")
+
+
+class ToolExecutor(Protocol):
+    """The minimal shape `Agent` needs from a tool-execution backend.
+
+    Deliberately NOT tied to any concrete implementation (MCP-backed or
+    otherwise) — whatever object is passed as `tool_executor` just needs
+    to satisfy this shape. `execute(...)` must return an object with
+    `.success`, `.tool_calls`-compatible tool result data, and a
+    `.to_dict()` method (matching the old `ToolResult` contract), since
+    that's what gets JSON-serialized back into the Context.
+    """
+
+    def execute(self, capability_name: str, arguments: dict[str, Any]) -> Any: ...
+
+    def get_tool_definitions(self) -> list[dict[str, Any]]: ...
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are ANIE, a network engineering assistant. Be precise and concise."
@@ -59,7 +83,7 @@ class Agent:
 
     input -> Context -> ModelRouter -> Provider.generate() -> ExecutionResult
                                   (-> Fallback Provider.generate() on failure)
-                                  (-> CapabilityExecutor.execute() on tool_calls,
+                                  (-> ToolExecutor.execute() on tool_calls,
                                       then Provider.generate() again)
     """
 
@@ -68,7 +92,7 @@ class Agent:
         router: ModelRouter,
         event_bus: Optional[EventBus] = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
-        tool_executor: Optional["CapabilityExecutor"] = None,
+        tool_executor: Optional[ToolExecutor] = None,
         max_tool_iterations: int = DEFAULT_MAX_TOOL_ITERATIONS,
     ):
         self.router = router

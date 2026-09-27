@@ -18,7 +18,8 @@ from typing import Any, Optional
 @dataclass
 class ToolSchema:
     """Metadata for a single tool, as returned by an MCP server's
-    `discover` response and as consumed by `app.capabilities`."""
+    `discover` response and consumed by whatever tool-execution layer
+    `app.core.agent.Agent` is given (see `app.core.agent.ToolExecutor`)."""
 
     name: str
     description: str = ""

@@ -1,0 +1,18 @@
+# This is the exact `mcp.servers` example block that lived (commented out)
+# in ANIE's config/config.yaml BEFORE this extraction. Preserved here for
+# reference since it names the vendor server module paths
+# (app.mcp.servers.mikrotik_server / app.mcp.servers.generic_server) that
+# no longer exist in ANIE after this phase.
+#
+# mcp:
+#   servers:
+#     - name: mikrotik
+#       transport: stdio
+#       command: python
+#       args: ["-m", "app.mcp.servers.mikrotik_server", "--host", "10.0.0.1"]
+#       timeout_seconds: 15
+#     - name: generic
+#       transport: stdio
+#       command: python
+#       args: ["-m", "app.mcp.servers.generic_server"]
+#       timeout_seconds: 10

@@ -3,7 +3,13 @@
 Speaks the tiny request/response protocol in `app.mcp.protocol` over
 whatever `Transport` it's given (`app.mcp.transport`). It doesn't know or
 care about MikroTik, RouterOS, or any other vendor — that lives entirely in
-the adapter/server layer (`app.adapters`, `app.mcp.servers`).
+separate MCP server projects, outside ANIE (see
+`archive/phase2-mcp-network-extraction/` for the extracted MikroTik/
+generic/Linux adapters and MCP-server scaffolding that used to live here).
+
+Note: the protocol this client speaks (`discover`/`invoke`/`ping` over
+newline-delimited JSON) is a custom prototype, not the official Model
+Context Protocol — see README.md.
 """
 
 from __future__ import annotations
@@ -84,9 +90,10 @@ class MCPClient:
     def invoke_tool(self, name: str, arguments: dict[str, Any]) -> MCPResponse:
         """Invoke a tool by name and return the raw `MCPResponse`.
 
-        Normalization into ANIE's `ToolResult` contract happens one layer
-        up, in `app.capabilities.executor.CapabilityExecutor` — this client
-        only speaks the MCP protocol.
+        Normalization into whatever structured tool-result shape ANIE ends
+        up using happens one layer up, in a host-side tool-execution layer
+        (see `app.core.agent.ToolExecutor`) — this client only speaks the
+        MCP protocol.
         """
         return self._send("invoke", {"tool": name, "arguments": arguments})
 
